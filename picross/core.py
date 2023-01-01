@@ -4,6 +4,8 @@ import dataclasses
 from enum import Enum
 import random
 
+FILE_EXTENSION = 'json'
+
 
 class BoardAxis(Enum):
     ROW = 0
@@ -39,6 +41,10 @@ class Board:
         for row in self._rows:
             yield row
 
+    def __len__(self):
+
+        return len(self._rows)
+
     def __eq__(self, other):
 
         if isinstance(other, Board):
@@ -61,7 +67,7 @@ class Board:
         if axis == BoardAxis.ROW:
             return self[index]
         elif axis == BoardAxis.COLUMN:
-            return [self._rows[index] for index in range(len(self._rows))]
+            return [self._rows[row_index][index] for row_index in range(len(self._rows))]
 
     def get_axis_key(self, index, axis):
 
@@ -81,23 +87,50 @@ class Board:
         if last_value != 0:  # Capture final island after iteration
             key.append(KeyIsland(last_value, current_length))
 
-        return key
+        return key if key else [KeyIsland(1, 0)]
+
+    def serialize(self):
+
+        return {'dimensions': self.dimensions, 'rows': self._rows, 'palette': self.palette.serialize()}
+
+    @classmethod
+    def deserialize(cls, data):
+
+        new_palette = Palette.deserialize(data['palette'])
+        new_board = cls(dimensions=data['dimensions'], palette=new_palette)
+        for row_index, row in enumerate(data['rows']):
+            new_board[row_index] = row
+
+        return new_board
 
 
 class Palette:
 
-    def __init__(self, colors=((0, 0, 0), )):
+    def __init__(self, colors=((40, 40, 40), )):
 
         self.colors = colors
+        self.empty_color = (220, 220, 220)
+        self.background_color = (240, 240, 240)
+        self.marking_color = (230, 100, 100)
+
+    def __getitem__(self, item):
+
+        return self.empty_color if item == 0 else self.colors[item + 1]
 
     @property
     def size(self):
 
         return len(self.colors)
 
+    def serialize(self):
 
-def test():
-    y = Palette(colors=((1, 0, 0), (0, 1, 0), (0, 0, 1)))
-    x = Board(dimensions=(15, 20), palette=y)
-    x.randomize()
-    return x
+        return self.__dict__
+
+    @classmethod
+    def deserialize(cls, data):
+
+        new_palette = cls(data['colors'])
+        new_palette.empty_color = data['empty_color']
+        new_palette.background_color = data['background_color']
+        new_palette.marking_color = data['marking_color']
+        return new_palette
