@@ -3,7 +3,7 @@
 import os
 import json
 from PySide6 import QtCore, QtWidgets, QtGui
-import picross.core as core
+import core as core
 
 
 class GameWindow(QtWidgets.QMainWindow):
