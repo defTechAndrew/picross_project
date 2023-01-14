@@ -114,10 +114,16 @@ class BoardWidget(QtWidgets.QWidget):
 
         self.board = board
         self.complete = False
+        # Drag operation variables
         self.drag_start = None
+        self.drag_start_cell = None
         self.drag_cells = []
+        self.drag_initial_state = None
+
+        # Layout Setup
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
         self.setLayout(QtWidgets.QVBoxLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
         grid_container = QtWidgets.QWidget()
         self.layout().addWidget(grid_container)
         grid_layout = QtWidgets.QGridLayout()
@@ -129,6 +135,7 @@ class BoardWidget(QtWidgets.QWidget):
         self.setAutoFillBackground(True)
         self.setPalette(board_palette)
 
+        # Populate palette switching buttons
         self.palette_buttons = []
         if len(self.board.palette.colors) > 1:
             button_container = QtWidgets.QWidget()
@@ -148,11 +155,11 @@ class BoardWidget(QtWidgets.QWidget):
             self.palette_buttons[0].setChecked(True)
 
         self._index = 1
+        key_palettes = get_qt_palettes(self.board.palette)
+        key_palettes[0].setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(*self.board.palette.empty_color))
 
-        color_palettes = get_qt_palettes(self.board.palette)
-        color_palettes[0].setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(*self.board.palette.empty_color))
+        # Populate board keys
         self.dividers = []
-
         for axis in (core.BoardAxis.ROW, core.BoardAxis.COLUMN):
             current_index = 1
             is_row = axis is core.BoardAxis.ROW
@@ -182,7 +189,7 @@ class BoardWidget(QtWidgets.QWidget):
                 container.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
                 container.setLayout(layout)
                 if axis_index % 2 == 1:
-                    container.setPalette(color_palettes[0])
+                    container.setPalette(key_palettes[0])
                 # Add key blocks to containers
                 key = self.board.get_axis_key(axis_index, axis)
                 layout.addStretch()
@@ -191,12 +198,13 @@ class BoardWidget(QtWidgets.QWidget):
                 for key_island in key:
                     key_block = KeyBlock(
                         key_island.length,
-                        color_palettes[key_island.index],
+                        key_palettes[key_island.index] if key_island.length else key_palettes[0],
                         buffer_width=buffer_width,
                         parent=self)
                     layout.addWidget(key_block)
                 layout.addSpacing(2)
 
+        # Populate board cells
         grid_index = [1, 1]
         self.cells = []
         for row_index, row in enumerate(self.board):
@@ -206,7 +214,8 @@ class BoardWidget(QtWidgets.QWidget):
             for column_index in range(len(row)):
                 if column_index % 5 == 0 and column_index != 0:
                     grid_index[1] += 1
-                self.cells[row_index].append(Cell(self.board.palette, self.get_index, parent=self))
+                new_cell = Cell(self.board.palette, self.get_index, (row_index, column_index), parent=self)
+                self.cells[row_index].append(new_cell)
                 grid_layout.addWidget(self.cells[row_index][-1], *grid_index)
                 grid_index[1] += 1
             grid_index[1] = 1
@@ -231,21 +240,31 @@ class BoardWidget(QtWidgets.QWidget):
                     else:
                         sequence = [self.cells[row_index][axis_index] for row_index in range(len(self.cells))]
                     for cell in sequence:
-                        cell.cross_label.show()
+                        cell.cross = True
 
     def get_board_state(self):
 
         board = core.Board(self.board.dimensions, self.board.palette)
         for row_index, row in enumerate(board):
             for column_index, _ in enumerate(row):
-                row[column_index] = self.cells[row_index][column_index]._index
+                row[column_index] = self.cells[row_index][column_index].index
         return board
 
-    def set_board_state(self, board):
+    def get_cross_state(self):
 
-        for row_index, row in enumerate(board):
+        cross_board = core.BoardCrossState(self.board.dimensions)
+        for row_index, row in enumerate(cross_board):
             for column_index, _ in enumerate(row):
-                self.cells[row_index][column_index]._index = row[column_index]
+                row[column_index] = self.cells[row_index][column_index].cross
+        return cross_board
+
+    def set_board_state(self, board, cross_state=None):
+
+        if cross_state is None:
+            cross_state = core.BoardCrossState(board.dimensions)
+        for row_index, row in enumerate(board):
+            for column_index, row_value in enumerate(row):
+                self.cells[row_index][column_index].set_state(row_value, cross_state[row_index][column_index])
 
     def index_selected(self):
 
@@ -257,6 +276,22 @@ class BoardWidget(QtWidgets.QWidget):
             elif not button.isChecked() and index + 1 == self._index:
                 self.palette_buttons[self._index - 1].setChecked(True)
                 break
+
+    def get_cell_span_to_start(self, position, axis, direction):
+
+        cell_span = [self.get_cell_at_position(position)]
+        next_cell = None
+        iteration_value = direction * -1  # Flip direction since we walk backwards through the drag
+        while next_cell != self.drag_start_cell:
+            if next_cell is not None:
+                cell_span.insert(0, next_cell)
+            grid_index = cell_span[0].grid_index
+            if axis == core.BoardAxis.ROW:
+                next_cell = self.cells[grid_index[0]][grid_index[1] + iteration_value]
+            else:
+                next_cell = self.cells[grid_index[0] + iteration_value][grid_index[1]]
+
+        return cell_span
 
     def get_index(self):
 
@@ -283,37 +318,54 @@ class BoardWidget(QtWidgets.QWidget):
         x_distance = abs(position.x() - self.drag_start.x())
         y_distance = abs(position.y() - self.drag_start.y())
         if x_distance > y_distance:
-            return QtCore.QPoint(position.x(), self.drag_start.y()), core.BoardAxis.ROW
+            direction = 1 if position.x() > self.drag_start.x() else -1
+            return QtCore.QPoint(position.x(), self.drag_start.y()), core.BoardAxis.ROW, direction
         else:
-            return QtCore.QPoint(self.drag_start.x(), position.y()), core.BoardAxis.COLUMN
+            direction = 1 if position.y() > self.drag_start.y() else -1
+            return QtCore.QPoint(self.drag_start.x(), position.y()), core.BoardAxis.COLUMN, direction
 
     def event(self, event):
 
-        # if event.type() == QtGui.QMouseEvent.Type.MouseButtonPress:
-        #     position = event.position().toPoint()
-        #     if self.get_cell_at_position(position):
-        #         self.get_cell_at_position(position).cross = True
-        #         self.drag_start = position
-        #         print('START', self.drag_start)
-        # elif event.type() == QtGui.QMouseEvent.Type.MouseMove and self.drag_start is not None:
-        #     end_position, axis = self.snap_point_to_cardinal(event.position().toPoint())
-        #     end_position = event.position().toPoint()
-        #     start_cell = self.get_cell_at_position(self.drag_start)
-        #     end_cell = self.get_cell_at_position(end_position)
-        #     if end_cell is not None:
-        #         if start_cell != end_cell:
-        #             if end_cell not in self.drag_cells:
-        #                 self.drag_cells.append(end_cell)
-        #                 if QtCore.Qt.MouseButton.LeftButton in event.buttons():
-        #                     end_cell.index = self.index
-        #                 elif QtCore.Qt.MouseButton.RightButton in event.buttons():
-        #                     end_cell.cross = True
-        # elif event.type() == QtGui.QMouseEvent.Type.MouseButtonRelease:
-        #     self.drag_start = None
+        if event.type() == QtGui.QMouseEvent.Type.MouseButtonPress:
+            position = event.position().toPoint()
+            self.drag_start_cell = self.get_cell_at_position(position)
+            if self.drag_start_cell:
+                self.drag_start = position
+                self.drag_cells = []
+                self.drag_initial_state = self.get_board_state(), self.get_cross_state()
+                start_index = self.drag_start_cell.grid_index
+                if QtCore.Qt.MouseButton.LeftButton in event.buttons():
+                    self.drag_initial_state[0][start_index[0]][start_index[1]] = self.drag_start_cell.index
+                elif QtCore.Qt.MouseButton.RightButton in event.buttons():
+                    self.drag_initial_state[1][start_index[0]][start_index[1]] = self.drag_start_cell.cross
 
-        if not self.complete and event.type() == QtGui.QMouseEvent.Type.MouseButtonRelease:
-            if self.check_completion():
-                self.complete_event()
+        elif self.drag_start_cell is not None and event.type() == QtGui.QMouseEvent.Type.MouseMove:
+            end_position, axis, direction = self.snap_point_to_cardinal(event.position().toPoint())
+            end_cell = self.get_cell_at_position(end_position)
+            last_end_cell = None if len(self.drag_cells) == 0 else self.drag_cells[-1]
+            if end_cell is not None and end_cell != self.drag_start_cell and end_cell != last_end_cell:
+                current_drag = self.get_cell_span_to_start(end_position, axis, direction)
+                if current_drag and self.drag_cells == current_drag[:-1]:  # Drag is one cell longer
+                    current_drag[-1].set_state(self.drag_start_cell.index, self.drag_start_cell.cross)
+                elif self.drag_cells and self.drag_cells[:-1] == current_drag:  # Drag is one cell shorter
+                    reset_cell = self.drag_cells[-1]
+                    reset_index = reset_cell.grid_index
+                    index = self.drag_initial_state[0][reset_index[0]][reset_index[1]]
+                    crossed = self.drag_initial_state[1][reset_index[0]][reset_index[1]]
+                    reset_cell.set_state(index, crossed)
+                else:
+                    self.set_board_state(*self.drag_initial_state)
+                    for cell in current_drag:
+                        cell.set_state(self.drag_start_cell.index, self.drag_start_cell.cross)
+                self.drag_cells = current_drag
+            elif self.drag_cells and end_cell == self.drag_start_cell:  # Return to start after a drag operation
+                self.set_board_state(*self.drag_initial_state)
+                self.drag_cells = []
+        elif event.type() == QtGui.QMouseEvent.Type.MouseButtonRelease:
+            self.drag_start_cell = None
+            if not self.complete:
+                if self.check_completion():
+                    self.complete_event()
 
         return super(BoardWidget, self).event(event)
 
@@ -331,12 +383,14 @@ class BoardWidget(QtWidgets.QWidget):
 class Cell(QtWidgets.QFrame):
     SIZE = 18
 
-    def __init__(self, palette, index_call, parent=None):
+    def __init__(self, palette, index_call, grid_index, parent=None):
         super(Cell, self).__init__(parent=parent)
 
         self._index = 0
+        self._cross = False
         self._complete = False
         self.index_call = index_call
+        self.grid_index = grid_index
         self.color_palette = palette
         self.setFixedSize(self.SIZE, self.SIZE)
         self.fill_palettes = get_qt_palettes(self.color_palette)
@@ -344,10 +398,7 @@ class Cell(QtWidgets.QFrame):
         self.setAutoFillBackground(True)
         self.setLayout(QtWidgets.QVBoxLayout())
         self.layout().setContentsMargins(0, 0, 0, 0)
-        self.cross_label = QtWidgets.QLabel()
-        self.cross_label.setPixmap(get_icon_pixmap('cross', QtGui.QColor(*palette.marking_color), size=Cell.SIZE - 2))
-        self.layout().addWidget(self.cross_label)
-        self.cross_label.hide()
+        self.cross_pixmap = get_icon_pixmap('cross', QtGui.QColor(*palette.marking_color), size=self.SIZE - 4)
         self.setFrameShape(QtWidgets.QFrame.Shape.Box)
 
     def event(self, event):
@@ -357,9 +408,22 @@ class Cell(QtWidgets.QFrame):
                 self.index = self.index_call()
             elif QtCore.Qt.MouseButton.RightButton in event.buttons():
                 self.cross = not self.cross
-                self.index = 0
 
         return super(Cell, self).event(event)
+
+    def paintEvent(self, event) -> None:
+
+        if self._cross:
+            painter = QtGui.QPainter(self)
+            painter.drawPixmap(QtCore.QRect(2, 2, self.SIZE - 4, self.SIZE - 4), self.cross_pixmap)
+        return super(Cell, self).paintEvent(event)
+
+    def set_state(self, index, crossed):
+
+        self._index = index
+        self.setPalette(self.fill_palettes[self._index])
+        self._cross = crossed
+        self.update()
 
     def set_complete_state(self, complete):
 
@@ -385,16 +449,15 @@ class Cell(QtWidgets.QFrame):
     @property
     def cross(self):
 
-        return not self.cross_label.isHidden()
+        return self._cross
 
     @cross.setter
     def cross(self, value):
 
+        self._cross = value
+        self.update()
         if value:
-            self.cross_label.show()
             self.index = 0
-        else:
-            self.cross_label.hide()
 
 
 class CompleteDialog(QtWidgets.QDialog):

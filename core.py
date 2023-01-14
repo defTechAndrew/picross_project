@@ -18,60 +18,74 @@ class KeyIsland:
     length: int
 
 
-class Board:
+class BaseBoardMatrix:
 
-    def __init__(self, dimensions=(5, 5), palette=None):
+    def __init__(self, default_value, dimensions=(5, 5)):
 
-        self.dimensions = dimensions
-        self.palette = Palette() if palette is None else palette
-        self._rows = list()
-        for _ in range(dimensions[0]):
-            self._rows.append([0 for _ in range(dimensions[1])])
+        self._dimensions = dimensions
+        self._data = list()
+        for _ in range(self._dimensions[0]):
+            self._data.append([default_value for _ in range(self._dimensions[1])])
 
-    def __getitem__(self, item):
+    def __getitem__(self, row_index):
 
-        return self._rows[item]
+        return self._data[row_index]
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, row_index, row_list):
 
-        self._rows[key] = value
+        if len(row_list) == self.dimensions[1]:
+            self._data[row_index] = row_list
+        else:
+            raise ValueError("Passed row does not match object's column dimesion")
 
     def __iter__(self):
 
-        for row in self._rows:
+        for row in self._data:
             yield row
 
     def __len__(self):
 
-        return len(self._rows)
+        return len(self._data)
 
     def __eq__(self, other):
 
-        if isinstance(other, Board):
-            if len(self._rows) != len(other._rows):
+        if issubclass(other.__class__, BaseBoardMatrix):
+            if len(self) != len(other):
                 return False
-            for row, other_row in zip(self._rows, other._rows):
+            for row, other_row in zip(self, other):
                 if row != other_row:
                     return False
             return True
         else:
             return False
 
+    @property
+    def dimensions(self):
+
+        return self._dimensions
+
+
+class Board(BaseBoardMatrix):
+
+    def __init__(self, dimensions=(5, 5), palette=None):
+        super(Board, self).__init__(0, dimensions=dimensions)
+
+        self.palette = Palette() if palette is None else palette
+
     def randomize(self):
 
-        for row_index in range(len(self._rows)):
-            self._rows[row_index] = [random.randint(0, self.palette.size) for _ in range(len(self._rows[row_index]))]
-
-    def _get_axis_index(self, index, axis):
-
-        if axis == BoardAxis.ROW:
-            return self[index]
-        elif axis == BoardAxis.COLUMN:
-            return [self._rows[row_index][index] for row_index in range(len(self._rows))]
+        for row_index in range(len(self._data)):
+            self._data[row_index] = [random.randint(0, self.palette.size) for _ in range(len(self._data[row_index]))]
 
     def get_axis_key(self, index, axis):
 
-        sequence = self._get_axis_index(index, axis)
+        if axis == BoardAxis.ROW:
+            sequence = self[index]
+        elif axis == BoardAxis.COLUMN:
+            sequence = [self._data[row_index][index] for row_index in range(len(self._data))]
+        else:
+            raise ValueError('Axis argument is not a valid BoardAxis value.')
+
         key = list()
         last_value = sequence[0]
         current_length = 0
@@ -91,7 +105,7 @@ class Board:
 
     def serialize(self):
 
-        return {'dimensions': self.dimensions, 'rows': self._rows, 'palette': self.palette.serialize()}
+        return {'dimensions': self.dimensions, 'rows': self._data, 'palette': self.palette.serialize()}
 
     @classmethod
     def deserialize(cls, data):
@@ -134,3 +148,22 @@ class Palette:
         new_palette.background_color = data['background_color']
         new_palette.marking_color = data['marking_color']
         return new_palette
+
+
+class BoardCrossState(BaseBoardMatrix):
+
+    def __init__(self, dimensions=(5, 5)):
+        super(BoardCrossState, self).__init__(False, dimensions=dimensions)
+
+    def serialize(self):
+
+        return {'dimensions': self.dimensions, 'crossed': self._data}
+
+    @classmethod
+    def deserialize(cls, data):
+
+        new_board = cls(dimensions=data['dimensions'])
+        for row_index, row in enumerate(data['rows']):
+            new_board[row_index] = row
+
+        return new_board
